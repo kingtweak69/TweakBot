@@ -1,0 +1,5 @@
+{
+    "api_key": "freellmapi-c00dbcaa6085a5bf87cd0aa3bd4c57c709ce5424456066a7",
+    "base_url": "http://127.0.0.1:31415/v1",
+    "model": "johnblick187/gemma4-rp"
+}
