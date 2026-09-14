@@ -2957,7 +2957,7 @@ class Music(commands.Cog):
                 value=(
                     f"[{_trim(player.current.title)}]"
                     f"({player.current.uri})\n"
-                    f"{_progress_bar("
+                    f"{_progress_bar"
                     f"player.position, "
                     f"player.current.length, "
                     f"14"
