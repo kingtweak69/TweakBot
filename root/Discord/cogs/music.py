@@ -1,6 +1,7 @@
 """
-Music cog — Lavalink via Wavelink 3.x with direct local file / attachment playback fallback.
+Music cog — Lavalink via Wavelink 3.x with local file / attachment playback.
 """
+
 import asyncio
 import logging
 import os
@@ -28,20 +29,36 @@ COLOR_PLAYING = discord.Color.from_str("#5865F2")
 COLOR_PAUSED = discord.Color.from_str("#FAA61A")
 COLOR_IDLE = discord.Color.from_str("#4F545C")
 
+SUPPORTED_AUDIO_EXTENSIONS = (
+    ".mp3",
+    ".wav",
+    ".flac",
+    ".m4a",
+    ".ogg",
+    ".aac",
+    ".opus",
+)
+
 
 def is_in_vc():
     async def predicate(ctx: commands.Context):
         if not ctx.author.voice:
-            raise commands.CheckFailure("You must be in a voice channel to use music commands.")
+            raise commands.CheckFailure(
+                "You must be in a voice channel to use music commands."
+            )
         return True
+
     return commands.check(predicate)
 
 
 def bot_in_vc():
     async def predicate(ctx: commands.Context):
         if not ctx.voice_client:
-            raise commands.CheckFailure("I'm not connected to a voice channel.")
+            raise commands.CheckFailure(
+                "I'm not connected to a voice channel."
+            )
         return True
+
     return commands.check(predicate)
 
 
@@ -50,9 +67,11 @@ class MusicPlayer(wavelink.Player):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
         self.home: discord.abc.Messageable | None = None
         self.controller: discord.Message | None = None
         self.controller_view: "PlayerController | None" = None
+
         self.autoplay = wavelink.AutoPlayMode.partial
 
         self.dj_enabled: bool = False
@@ -66,156 +85,364 @@ class MusicPlayer(wavelink.Player):
         if self.controller_view:
             self.controller_view.stop()
             self.controller_view = None
+
         if self.controller:
             try:
                 await self.controller.delete()
             except discord.HTTPException:
                 pass
+
             self.controller = None
 
 
 class PlayerController(discord.ui.View):
+
     def __init__(self, cog: "Music", player: MusicPlayer):
         super().__init__(timeout=None)
+
         self.cog = cog
         self.player = player
+
         self._sync_buttons()
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+
         if not self.player or not self.player.connected:
-            await interaction.response.send_message("The player is gone.", ephemeral=True)
-            return False
-        if not interaction.user.voice or interaction.user.voice.channel != self.player.channel:
             await interaction.response.send_message(
-                "You need to be in my voice channel to use these.", ephemeral=True
+                "The player is gone.",
+                ephemeral=True,
             )
             return False
+
+        if (
+            not interaction.user.voice
+            or interaction.user.voice.channel != self.player.channel
+        ):
+            await interaction.response.send_message(
+                "You need to be in my voice channel to use these.",
+                ephemeral=True,
+            )
+            return False
+
         return True
 
     def _sync_buttons(self):
-        self.play_pause.emoji = "▶️" if getattr(self.player, "paused", False) else "⏸️"
-        self.play_pause.style = discord.ButtonStyle.success if getattr(self.player, "paused", False) else discord.ButtonStyle.secondary
 
-        mode = getattr(getattr(self.player, "queue", None), "mode", None)
+        self.play_pause.emoji = (
+            "▶️"
+            if getattr(self.player, "paused", False)
+            else "⏸️"
+        )
+
+        self.play_pause.style = (
+            discord.ButtonStyle.success
+            if getattr(self.player, "paused", False)
+            else discord.ButtonStyle.secondary
+        )
+
+        mode = getattr(
+            getattr(self.player, "queue", None),
+            "mode",
+            None,
+        )
+
         if mode == wavelink.QueueMode.loop:
             self.loop_toggle.emoji = "🔂"
             self.loop_toggle.style = discord.ButtonStyle.primary
+
         elif mode == wavelink.QueueMode.loop_all:
             self.loop_toggle.emoji = "🔁"
             self.loop_toggle.style = discord.ButtonStyle.primary
+
         else:
             self.loop_toggle.emoji = "🔁"
             self.loop_toggle.style = discord.ButtonStyle.secondary
 
         self.autoplay_toggle.style = (
             discord.ButtonStyle.primary
-            if getattr(self.player, "autoplay", None) == wavelink.AutoPlayMode.enabled
+            if getattr(self.player, "autoplay", None)
+            == wavelink.AutoPlayMode.enabled
             else discord.ButtonStyle.secondary
         )
 
     async def refresh(self, interaction: discord.Interaction):
+
         self._sync_buttons()
+
         await interaction.response.edit_message(
-            embed=self.cog.build_now_playing(self.player), view=self
+            embed=self.cog.build_now_playing(self.player),
+            view=self,
         )
 
-    @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary, row=0)
-    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
-        history = getattr(self.player.queue, "history", [])
+    @discord.ui.button(
+        emoji="⏮️",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+    )
+    async def previous(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
+        history = getattr(
+            self.player.queue,
+            "history",
+            [],
+        )
+
         if len(history) < 2:
-            return await interaction.response.send_message("No previous track.", ephemeral=True)
+            return await interaction.response.send_message(
+                "No previous track.",
+                ephemeral=True,
+            )
+
         prev = history[-2]
+
         self.player.queue.put_at(0, prev)
+
         await interaction.response.defer()
+
         await self.player.skip(force=True)
 
-    @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary, row=0)
-    async def play_pause(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        emoji="⏸️",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+    )
+    async def play_pause(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
         if hasattr(self.player, "pause"):
-            await self.player.pause(not self.player.paused)
+            await self.player.pause(
+                not self.player.paused
+            )
+
         elif hasattr(self.player, "is_paused"):
+
             if self.player.is_paused():
                 self.player.resume()
             else:
                 self.player.pause()
+
         await self.refresh(interaction)
 
-    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, row=0)
-    async def skip_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        emoji="⏭️",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+    )
+    async def skip_btn(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
         await interaction.response.defer()
+
         if hasattr(self.player, "skip"):
             await self.player.skip(force=True)
+
         elif hasattr(self.player, "stop"):
             self.player.stop()
 
-    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, row=0)
-    async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        emoji="⏹️",
+        style=discord.ButtonStyle.danger,
+        row=0,
+    )
+    async def stop_btn(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
         if hasattr(self.player, "queue"):
             self.player.queue.clear()
             self.player.queue.reset()
+
         await interaction.response.defer()
+
         if hasattr(self.player, "teardown_controller"):
             await self.player.teardown_controller()
+
         await self.player.disconnect()
 
-    @discord.ui.button(emoji="🔉", style=discord.ButtonStyle.secondary, row=1)
-    async def vol_down(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vol = getattr(self.player, "volume", 100)
-        await self.player.set_volume(max(0, vol - 10))
+    @discord.ui.button(
+        emoji="🔉",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+    )
+    async def vol_down(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
+        vol = getattr(
+            self.player,
+            "volume",
+            100,
+        )
+
+        await self.player.set_volume(
+            max(0, vol - 10)
+        )
+
         await self.refresh(interaction)
 
-    @discord.ui.button(emoji="🔊", style=discord.ButtonStyle.secondary, row=1)
-    async def vol_up(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vol = getattr(self.player, "volume", 100)
-        await self.player.set_volume(min(200, vol + 10))
+    @discord.ui.button(
+        emoji="🔊",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+    )
+    async def vol_up(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
+        vol = getattr(
+            self.player,
+            "volume",
+            100,
+        )
+
+        await self.player.set_volume(
+            min(200, vol + 10)
+        )
+
         await self.refresh(interaction)
 
-    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, row=1)
-    async def loop_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        emoji="🔁",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+    )
+    async def loop_toggle(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
         mode = self.player.queue.mode
+
         if mode == wavelink.QueueMode.normal:
             self.player.queue.mode = wavelink.QueueMode.loop
+
         elif mode == wavelink.QueueMode.loop:
             self.player.queue.mode = wavelink.QueueMode.loop_all
+
         else:
             self.player.queue.mode = wavelink.QueueMode.normal
+
         await self.refresh(interaction)
 
-    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
-    async def shuffle_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        emoji="🔀",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+    )
+    async def shuffle_btn(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
         if self.player.queue.count < 2:
             return await interaction.response.send_message(
-                "Need at least 2 queued tracks to shuffle.", ephemeral=True
+                "Need at least 2 queued tracks to shuffle.",
+                ephemeral=True,
             )
+
         self.player.queue.shuffle()
+
         await self.refresh(interaction)
 
-    @discord.ui.button(emoji="✨", style=discord.ButtonStyle.secondary, row=1)
-    async def autoplay_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.player.autoplay == wavelink.AutoPlayMode.enabled:
-            self.player.autoplay = wavelink.AutoPlayMode.partial
+    @discord.ui.button(
+        emoji="✨",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+    )
+    async def autoplay_toggle(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
+        if (
+            self.player.autoplay
+            == wavelink.AutoPlayMode.enabled
+        ):
+            self.player.autoplay = (
+                wavelink.AutoPlayMode.partial
+            )
         else:
-            self.player.autoplay = wavelink.AutoPlayMode.enabled
+            self.player.autoplay = (
+                wavelink.AutoPlayMode.enabled
+            )
+
         await self.refresh(interaction)
 
-    @discord.ui.button(label="Queue", emoji="📜", style=discord.ButtonStyle.secondary, row=2)
-    async def queue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        label="Queue",
+        emoji="📜",
+        style=discord.ButtonStyle.secondary,
+        row=2,
+    )
+    async def queue_btn(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+
         tracks = list(self.player.queue)
+
         if not tracks:
-            return await interaction.response.send_message("The queue is empty.", ephemeral=True)
+            return await interaction.response.send_message(
+                "The queue is empty.",
+                ephemeral=True,
+            )
+
         lines = [
-            f"`{i}.` [{_trim(getattr(t, 'title', 'Local Audio'))}]({getattr(t, 'uri', '#')}) — `{_fmt_duration(getattr(t, 'length', 0))}`"
+            (
+                f"`{i}.` "
+                f"[{_trim(getattr(t, 'title', 'Local Audio'))}]"
+                f"({getattr(t, 'uri', '#')}) "
+                f"— `{_fmt_duration(getattr(t, 'length', 0))}`"
+            )
             for i, t in enumerate(tracks[:15], 1)
         ]
+
         if len(tracks) > 15:
-            lines.append(f"\n*...and {len(tracks) - 15} more*")
+            lines.append(
+                f"\n*...and {len(tracks) - 15} more*"
+            )
+
         e = discord.Embed(
             title="🎵 Up Next",
             description="\n".join(lines),
             color=COLOR_PLAYING,
         )
-        e.set_footer(text=f"{len(tracks)} tracks | {_fmt_duration(sum(getattr(t, 'length', 0) for t in tracks))} total")
-        await interaction.response.send_message(embed=e, ephemeral=True)
+
+        e.set_footer(
+            text=(
+                f"{len(tracks)} tracks | "
+                f"{_fmt_duration(sum(getattr(t, 'length', 0) for t in tracks))} "
+                f"total"
+            )
+        )
+
+        await interaction.response.send_message(
+            embed=e,
+            ephemeral=True,
+        )
 
 
 class Music(commands.Cog):
@@ -226,27 +453,227 @@ class Music(commands.Cog):
         self._connected = False
 
     def _register_capabilities(self) -> None:
+
         import config
-        if not getattr(config, "AI_MUSIC_TOOLS_ENABLED", True):
+
+        if not getattr(
+            config,
+            "AI_MUSIC_TOOLS_ENABLED",
+            True,
+        ):
             return
 
         registry = self.bot.capabilities
         source = "music"
+
         definitions = [
-            ("dj_start", "Start autonomous DJ mode in the requester's voice channel.", {"type": "object", "properties": {"style": {"type": "string"}, "energy": {"type": "integer", "minimum": 1, "maximum": 10}}}, lambda ctx, a: self.tool_dj_start(ctx, style=str(a.get("style") or "open format"), energy=int(a.get("energy") or 7))),
-            ("dj_stop", "Turn off autonomous DJ selection while preserving human requests.", {"type": "object", "properties": {}}, lambda ctx, a: self.tool_dj_stop(ctx)),
-            ("dj_set_style", "Change the active DJ genre, era, artist direction, or mood.", {"type": "object", "properties": {"style": {"type": "string"}}, "required": ["style"]}, lambda ctx, a: self.tool_dj_style(ctx, str(a.get("style") or ""))),
-            ("dj_set_energy", "Change the active DJ energy from 1 to 10.", {"type": "object", "properties": {"energy": {"type": "integer", "minimum": 1, "maximum": 10}}, "required": ["energy"]}, lambda ctx, a: self.tool_dj_energy(ctx, int(a.get("energy") or 7))),
-            ("dj_request", "Put a requested song or artist at the front of the DJ queue.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, lambda ctx, a: self.tool_dj_request(ctx, str(a.get("query") or ""))),
-            ("dj_status", "Read the current DJ style, energy, track, and queue state.", {"type": "object", "properties": {}}, lambda ctx, a: self.tool_dj_status(ctx)),
-            ("music_play", "Play or queue a song from a title, artist, file path, or attachment URL.", {"type": "object", "properties": {"query": {"type": "string"}}}, lambda ctx, a: self.tool_music_play(ctx, str(a.get("query") or ""))),
-            ("music_skip", "Skip the current song, optionally multiple tracks.", {"type": "object", "properties": {"count": {"type": "integer", "minimum": 1, "maximum": 20}}}, lambda ctx, a: self.tool_music_skip(ctx, int(a.get("count") or 1))),
-            ("music_pause", "Pause voice music playback.", {"type": "object", "properties": {}}, lambda ctx, a: self.tool_music_pause(ctx)),
-            ("music_resume", "Resume paused voice music playback.", {"type": "object", "properties": {}}, lambda ctx, a: self.tool_music_resume(ctx)),
-            ("music_volume", "Set Discord music volume from 0 to 200 percent.", {"type": "object", "properties": {"volume": {"type": "integer", "minimum": 0, "maximum": 200}}, "required": ["volume"]}, lambda ctx, a: self.tool_music_volume(ctx, int(a.get("volume") or 100))),
-            ("music_stop", "Stop all music, clear the queue, disable DJ mode, and disconnect.", {"type": "object", "properties": {}}, lambda ctx, a: self.tool_music_stop(ctx)),
+
+            (
+                "dj_start",
+                "Start autonomous DJ mode in the requester's voice channel.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "style": {
+                            "type": "string"
+                        },
+                        "energy": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                        },
+                    },
+                },
+                lambda ctx, a:
+                    self.tool_dj_start(
+                        ctx,
+                        style=str(
+                            a.get("style")
+                            or "open format"
+                        ),
+                        energy=int(
+                            a.get("energy")
+                            or 7
+                        ),
+                    ),
+            ),
+
+            (
+                "dj_stop",
+                "Turn off autonomous DJ selection while preserving human requests.",
+                {
+                    "type": "object",
+                    "properties": {},
+                },
+                lambda ctx, a:
+                    self.tool_dj_stop(ctx),
+            ),
+
+            (
+                "dj_set_style",
+                "Change the active DJ genre, era, artist direction, or mood.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "style": {
+                            "type": "string"
+                        }
+                    },
+                    "required": ["style"],
+                },
+                lambda ctx, a:
+                    self.tool_dj_style(
+                        ctx,
+                        str(a.get("style") or ""),
+                    ),
+            ),
+
+            (
+                "dj_set_energy",
+                "Change the active DJ energy from 1 to 10.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "energy": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                        }
+                    },
+                    "required": ["energy"],
+                },
+                lambda ctx, a:
+                    self.tool_dj_energy(
+                        ctx,
+                        int(a.get("energy") or 7),
+                    ),
+            ),
+
+            (
+                "dj_request",
+                "Put a requested song or artist at the front of the DJ queue.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string"
+                        }
+                    },
+                    "required": ["query"],
+                },
+                lambda ctx, a:
+                    self.tool_dj_request(
+                        ctx,
+                        str(a.get("query") or ""),
+                    ),
+            ),
+
+            (
+                "dj_status",
+                "Read the current DJ style, energy, track, and queue state.",
+                {
+                    "type": "object",
+                    "properties": {},
+                },
+                lambda ctx, a:
+                    self.tool_dj_status(ctx),
+            ),
+
+            (
+                "music_play",
+                "Play or queue a song from a title, artist, file path, or attachment URL.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string"
+                        }
+                    },
+                },
+                lambda ctx, a:
+                    self.tool_music_play(
+                        ctx,
+                        str(a.get("query") or ""),
+                    ),
+            ),
+
+            (
+                "music_skip",
+                "Skip the current song, optionally multiple tracks.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 20,
+                        }
+                    },
+                },
+                lambda ctx, a:
+                    self.tool_music_skip(
+                        ctx,
+                        int(a.get("count") or 1),
+                    ),
+            ),
+
+            (
+                "music_pause",
+                "Pause voice music playback.",
+                {
+                    "type": "object",
+                    "properties": {},
+                },
+                lambda ctx, a:
+                    self.tool_music_pause(ctx),
+            ),
+
+            (
+                "music_resume",
+                "Resume paused voice music playback.",
+                {
+                    "type": "object",
+                    "properties": {},
+                },
+                lambda ctx, a:
+                    self.tool_music_resume(ctx),
+            ),
+
+            (
+                "music_volume",
+                "Set Discord music volume from 0 to 200 percent.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "volume": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 200,
+                        }
+                    },
+                    "required": ["volume"],
+                },
+                lambda ctx, a:
+                    self.tool_music_volume(
+                        ctx,
+                        int(a.get("volume") or 100),
+                    ),
+            ),
+
+            (
+                "music_stop",
+                "Stop all music, clear the queue, disable DJ mode, and disconnect.",
+                {
+                    "type": "object",
+                    "properties": {},
+                },
+                lambda ctx, a:
+                    self.tool_music_stop(ctx),
+            ),
         ]
+
         for name, description, schema, handler in definitions:
+
             registry.register(
                 name=name,
                 description=description,
@@ -258,889 +685,2949 @@ class Music(commands.Cog):
             )
 
     async def cog_load(self):
+
         self._register_capabilities()
+
         import config
 
-        is_secure = str(getattr(config, "LAVALINK_SECURE", False)).lower() in ("true", "1", "yes")
-        scheme = "https" if is_secure else "http"
-        host = getattr(config, "LAVALINK_HOST", "localhost")
-        port = getattr(config, "LAVALINK_PORT", 2333)
+        is_secure = str(
+            getattr(
+                config,
+                "LAVALINK_SECURE",
+                False,
+            )
+        ).lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+
+        scheme = (
+            "https"
+            if is_secure
+            else "http"
+        )
+
+        host = getattr(
+            config,
+            "LAVALINK_HOST",
+            "localhost",
+        )
+
+        port = getattr(
+            config,
+            "LAVALINK_PORT",
+            2333,
+        )
+
         node_uri = f"{scheme}://{host}:{port}"
 
         self.refresh_controllers.start()
-        for attempt in range(1, LAVALINK_CONNECT_RETRIES + 1):
+
+        for attempt in range(
+            1,
+            LAVALINK_CONNECT_RETRIES + 1,
+        ):
+
             try:
+
                 node = wavelink.Node(
                     uri=node_uri,
                     password=config.LAVALINK_PASSWORD,
                 )
-                await wavelink.Pool.connect(nodes=[node], client=self.bot, cache_capacity=100)
+
+                await wavelink.Pool.connect(
+                    nodes=[node],
+                    client=self.bot,
+                    cache_capacity=100,
+                )
+
                 self._connected = True
-                log.info("Connected to Lavalink at %s", node_uri)
+
+                log.info(
+                    "Connected to Lavalink at %s",
+                    node_uri,
+                )
+
                 return
+
             except Exception as exc:
-                log.warning("Lavalink connect attempt %d failed: %s", attempt, exc)
+
+                log.warning(
+                    "Lavalink connect attempt %d failed: %s",
+                    attempt,
+                    exc,
+                )
+
                 if attempt < LAVALINK_CONNECT_RETRIES:
                     await asyncio.sleep(3)
-        log.warning("Lavalink unavailable — fallback FFmpeg local audio enabled.")
+
+        log.warning(
+            "Lavalink unavailable — "
+            "fallback FFmpeg local audio enabled."
+        )
 
     async def cog_unload(self):
-        self.bot.capabilities.unregister_source("music")
+
+        self.bot.capabilities.unregister_source(
+            "music"
+        )
+
         self.refresh_controllers.cancel()
 
-    async def _get_player(self, ctx: commands.Context):
+    async def _get_player(
+        self,
+        ctx: commands.Context,
+    ):
+
         if not ctx.author.voice:
-            await ctx.send(embed=error_embed("Join a voice channel first."))
+
+            await ctx.send(
+                embed=error_embed(
+                    "Join a voice channel first."
+                )
+            )
+
             return None
 
-        # Standard Lavalink Player
         if self._connected:
+
             player: MusicPlayer = ctx.voice_client
+
             if not player:
-                player = await ctx.author.voice.channel.connect(cls=MusicPlayer, self_deaf=True)
+
+                player = await (
+                    ctx.author.voice.channel.connect(
+                        cls=MusicPlayer,
+                        self_deaf=True,
+                    )
+                )
+
                 try:
-                    player.inactive_timeout = IDLE_DISCONNECT_SECONDS
+                    player.inactive_timeout = (
+                        IDLE_DISCONNECT_SECONDS
+                    )
                 except Exception:
                     pass
+
             player.home = ctx.channel
+
             return player
 
-        # Fallback Native FFmpeg Voice Client for local files when Lavalink is down
+        # Lavalink is unavailable.
+        # Only then do we use Discord's native FFmpeg player.
         vc = ctx.voice_client
+
         if not vc:
             vc = await ctx.author.voice.channel.connect()
+
         return vc
 
-    async def _play_local_file(self, ctx: commands.Context, file_path_or_url: str):
+    async def _play_local_file(
+        self,
+        ctx: commands.Context,
+        file_path_or_url: str,
+    ):
+        """
+        Play a local file or direct audio URL.
+
+        Lavalink:
+            local filesystem path -> local source
+            http(s) URL           -> HTTP source
+
+        Native FFmpeg is only used when Lavalink is unavailable.
+        """
+
+        if not ctx.author.voice:
+
+            return await ctx.send(
+                embed=error_embed(
+                    "Join a voice channel first."
+                )
+            )
+
+        source = str(
+            file_path_or_url or ""
+        ).strip()
+
+        if not source:
+
+            return await ctx.send(
+                embed=error_embed(
+                    "No audio file or URL was provided."
+                )
+            )
+
+        is_http = source.startswith(
+            (
+                "http://",
+                "https://",
+            )
+        )
+
+        # ──────────────────────────────────────────────────────────────
+        # Lavalink playback
+        # ──────────────────────────────────────────────────────────────
+
+        if self._connected:
+
+            player = await self._get_player(ctx)
+
+            if not isinstance(
+                player,
+                MusicPlayer,
+            ):
+
+                return await ctx.send(
+                    embed=error_embed(
+                        "Lavalink is connected but "
+                        "the Lavalink player is unavailable."
+                    )
+                )
+
+            try:
+
+                if is_http:
+
+                    # Lavalink HTTP source.
+                    identifier = source
+
+                else:
+
+                    # Normalize local filesystem path.
+                    local_path = os.path.abspath(
+                        os.path.expanduser(
+                            source.strip("\"'")
+                        )
+                    )
+
+                    if not os.path.isfile(
+                        local_path
+                    ):
+
+                        return await ctx.send(
+                            embed=error_embed(
+                                "Local file does not exist:\n"
+                                f"`{local_path}`"
+                            )
+                        )
+
+                    # Lavalink local source.
+                    identifier = (
+                        f"local:{local_path}"
+                    )
+
+                log.info(
+                    "Loading local/direct audio through Lavalink: %s",
+                    identifier,
+                )
+
+                results = await wavelink.Playable.search(
+                    identifier
+                )
+
+                if not results:
+
+                    return await ctx.send(
+                        embed=error_embed(
+                            "Lavalink could not load "
+                            "that audio file."
+                        )
+                    )
+
+                if isinstance(
+                    results,
+                    wavelink.Playlist,
+                ):
+
+                    tracks = results.tracks
+
+                else:
+
+                    tracks = [results[0]]
+
+                if not tracks:
+
+                    return await ctx.send(
+                        embed=error_embed(
+                            "Lavalink returned no playable tracks."
+                        )
+                    )
+
+                for track in tracks:
+
+                    track.extras = {
+                        "requester": ctx.author.id,
+                        "local_file": not is_http,
+                        "source_url": source,
+                    }
+
+                    await player.queue.put_wait(
+                        track
+                    )
+
+                if player.playing:
+
+                    await ctx.send(
+                        embed=success_embed(
+                            f"🎵 Queued **"
+                            f"{_trim(getattr(tracks[0], 'title', 'Audio File'))}"
+                            f"**."
+                        )
+                    )
+
+                else:
+
+                    await player.play(
+                        player.queue.get(),
+                        populate=player.dj_enabled,
+                        max_populate=5,
+                    )
+
+                    name = (
+                        os.path.basename(source)
+                        if not is_http
+                        else "Audio File"
+                    )
+
+                    await ctx.send(
+                        embed=success_embed(
+                            f"🎶 Now playing **{name}**."
+                        )
+                    )
+
+                return
+
+            except Exception as exc:
+
+                log.exception(
+                    "Lavalink failed to load audio: %s",
+                    source,
+                )
+
+                return await ctx.send(
+                    embed=error_embed(
+                        "Failed to load audio through Lavalink:\n"
+                        f"`{exc}`"
+                    )
+                )
+
+        # ──────────────────────────────────────────────────────────────
+        # Native FFmpeg fallback
+        # ──────────────────────────────────────────────────────────────
+
         vc = ctx.voice_client
+
         if not vc:
-            if not ctx.author.voice:
-                return await ctx.send(embed=error_embed("Join a voice channel first."))
+
             vc = await ctx.author.voice.channel.connect()
 
-        ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn'
-        } if file_path_or_url.startswith(('http://', 'https://')) else {}
-
         try:
-            if vc.is_playing() or vc.is_paused():
-                vc.stop()
-            source = discord.FFmpegPCMAudio(file_path_or_url, **ffmpeg_options)
-            vc.play(source)
-            name = os.path.basename(file_path_or_url) if not file_path_or_url.startswith('http') else "Audio File"
-            await ctx.send(embed=success_embed(f"🎶 Now playing local file: **{name}**"))
-        except Exception as e:
-            await ctx.send(embed=error_embed(f"Failed to play file: {e}"))
 
-    def build_now_playing(self, player: MusicPlayer) -> discord.Embed:
-        track = getattr(player, "current", None)
+            ffmpeg_options = {}
+
+            if is_http:
+
+                ffmpeg_options = {
+                    "before_options": (
+                        "-reconnect 1 "
+                        "-reconnect_streamed 1 "
+                        "-reconnect_delay_max 5"
+                    ),
+                    "options": "-vn",
+                }
+
+            if (
+                vc.is_playing()
+                or vc.is_paused()
+            ):
+
+                vc.stop()
+
+            source_obj = discord.FFmpegPCMAudio(
+                source,
+                **ffmpeg_options,
+            )
+
+            vc.play(source_obj)
+
+            name = (
+                os.path.basename(source)
+                if not is_http
+                else "Audio File"
+            )
+
+            await ctx.send(
+                embed=success_embed(
+                    f"🎶 Now playing local file: "
+                    f"**{name}**"
+                )
+            )
+
+        except Exception as exc:
+
+            log.exception(
+                "FFmpeg local playback failed: %s",
+                source,
+            )
+
+            await ctx.send(
+                embed=error_embed(
+                    f"Failed to play file: {exc}"
+                )
+            )
+
+    def build_now_playing(
+        self,
+        player: MusicPlayer,
+    ) -> discord.Embed:
+
+        track = getattr(
+            player,
+            "current",
+            None,
+        )
+
         if not track:
+
             return discord.Embed(
                 title="⏹️ Nothing Playing",
-                description="Queue something with `play`.",
+                description=(
+                    "Queue something with `play`."
+                ),
                 color=COLOR_IDLE,
             )
 
-        pos, dur = getattr(player, "position", 0), getattr(track, "length", 0)
-        bar = _progress_bar(pos, dur)
-        paused = getattr(player, "paused", False)
-        state = "⏸️ Paused" if paused else "▶️ Now Playing"
-
-        e = discord.Embed(
-            title=f"{state}",
-            description=(
-                f"### [{_trim(getattr(track, 'title', 'Local Audio'), 60)}]({getattr(track, 'uri', '#')})\n"
-                f"**{getattr(track, 'author', 'Unknown')}**\n\n"
-                f"{bar}\n"
-                f"`{_fmt_duration(pos)}` {' ' * 12} `{_fmt_duration(dur)}`"
-            ),
-            color=COLOR_PAUSED if paused else COLOR_PLAYING,
+        pos = getattr(
+            player,
+            "position",
+            0,
         )
 
-        if getattr(track, "artwork", None):
-            e.set_thumbnail(url=track.artwork)
+        dur = getattr(
+            track,
+            "length",
+            0,
+        )
 
-        e.add_field(name="Volume", value=f"{_volume_icon(getattr(player, 'volume', 100))} {getattr(player, 'volume', 100)}%")
-        e.add_field(name="Loop", value=_loop_status(player))
-        queue_count = getattr(player.queue, "count", 0) if hasattr(player, "queue") else 0
-        e.add_field(name="Queue", value=f"{queue_count} track(s)")
+        bar = _progress_bar(
+            pos,
+            dur,
+        )
 
-        if getattr(player, "dj_enabled", False):
-            style = player.dj_style or "open format"
+        paused = getattr(
+            player,
+            "paused",
+            False,
+        )
+
+        state = (
+            "⏸️ Paused"
+            if paused
+            else "▶️ Now Playing"
+        )
+
+        e = discord.Embed(
+            title=state,
+            description=(
+                f"### ["
+                f"{_trim(getattr(track, 'title', 'Local Audio'), 60)}"
+                f"]({getattr(track, 'uri', '#')})\n"
+                f"**{getattr(track, 'author', 'Unknown')}**\n\n"
+                f"{bar}\n"
+                f"`{_fmt_duration(pos)}`"
+                f"{' ' * 12}"
+                f"`{_fmt_duration(dur)}`"
+            ),
+            color=(
+                COLOR_PAUSED
+                if paused
+                else COLOR_PLAYING
+            ),
+        )
+
+        if getattr(
+            track,
+            "artwork",
+            None,
+        ):
+
+            e.set_thumbnail(
+                url=track.artwork
+            )
+
+        e.add_field(
+            name="Volume",
+            value=(
+                f"{_volume_icon(getattr(player, 'volume', 100))} "
+                f"{getattr(player, 'volume', 100)}%"
+            ),
+        )
+
+        e.add_field(
+            name="Loop",
+            value=_loop_status(player),
+        )
+
+        queue_count = (
+            getattr(
+                player.queue,
+                "count",
+                0,
+            )
+            if hasattr(player, "queue")
+            else 0
+        )
+
+        e.add_field(
+            name="Queue",
+            value=f"{queue_count} track(s)",
+        )
+
+        if getattr(
+            player,
+            "dj_enabled",
+            False,
+        ):
+
+            style = (
+                player.dj_style
+                or "open format"
+            )
+
             e.add_field(
                 name="AI DJ",
-                value=f"🎛️ {style} · energy {player.dj_energy}/10",
+                value=(
+                    f"🎛️ {style} · "
+                    f"energy {player.dj_energy}/10"
+                ),
                 inline=False,
             )
-        elif getattr(player, "autoplay", None) == wavelink.AutoPlayMode.enabled:
-            e.add_field(name="Autoplay", value="✨ On", inline=False)
+
+        elif (
+            getattr(
+                player,
+                "autoplay",
+                None,
+            )
+            == wavelink.AutoPlayMode.enabled
+        ):
+
+            e.add_field(
+                name="Autoplay",
+                value="✨ On",
+                inline=False,
+            )
 
         return e
 
-    async def send_controller(self, player: MusicPlayer):
-        if not getattr(player, "home", None):
+    async def send_controller(
+        self,
+        player: MusicPlayer,
+    ):
+
+        if not getattr(
+            player,
+            "home",
+            None,
+        ):
             return
+
         await player.teardown_controller()
-        view = PlayerController(self, player)
+
+        view = PlayerController(
+            self,
+            player,
+        )
+
         try:
-            msg = await player.home.send(embed=self.build_now_playing(player), view=view)
+
+            msg = await player.home.send(
+                embed=self.build_now_playing(
+                    player
+                ),
+                view=view,
+            )
+
         except discord.HTTPException as exc:
-            log.warning("Could not send controller: %s", exc)
+
+            log.warning(
+                "Could not send controller: %s",
+                exc,
+            )
+
             return
+
         player.controller = msg
         player.controller_view = view
 
-    @tasks.loop(seconds=CONTROLLER_REFRESH_SECONDS)
+    @tasks.loop(
+        seconds=CONTROLLER_REFRESH_SECONDS
+    )
     async def refresh_controllers(self):
-        for player in list(wavelink.Pool.get_node().players.values()) if wavelink.Pool.nodes else []:
-            if not isinstance(player, MusicPlayer):
+
+        for player in (
+            list(
+                wavelink.Pool.get_node()
+                .players
+                .values()
+            )
+            if wavelink.Pool.nodes
+            else []
+        ):
+
+            if not isinstance(
+                player,
+                MusicPlayer,
+            ):
                 continue
-            if not player.controller or not player.current or player.paused:
+
+            if (
+                not player.controller
+                or not player.current
+                or player.paused
+            ):
                 continue
+
             try:
+
                 player.controller_view._sync_buttons()
+
                 await player.controller.edit(
-                    embed=self.build_now_playing(player), view=player.controller_view
+                    embed=self.build_now_playing(
+                        player
+                    ),
+                    view=player.controller_view,
                 )
+
             except discord.NotFound:
+
                 player.controller = None
+
             except discord.HTTPException as exc:
-                log.debug("Controller refresh failed: %s", exc)
+
+                log.debug(
+                    "Controller refresh failed: %s",
+                    exc,
+                )
 
     @refresh_controllers.before_loop
     async def _before_refresh(self):
+
         await self.bot.wait_until_ready()
 
-    # ── AI DJ engine & tool implementations ───────────────────────────────────
+    # ── AI DJ engine ───────────────────────────────────────────────────────
 
     @staticmethod
-    def _dj_track_key(track: wavelink.Playable | None) -> str:
+    def _dj_track_key(
+        track: wavelink.Playable | None,
+    ) -> str:
+
         if track is None:
             return ""
-        identifier = str(getattr(track, "identifier", "") or "").strip()
+
+        identifier = str(
+            getattr(
+                track,
+                "identifier",
+                "",
+            )
+            or ""
+        ).strip()
+
         if identifier:
             return identifier
-        uri = str(getattr(track, "uri", "") or "").strip()
+
+        uri = str(
+            getattr(
+                track,
+                "uri",
+                "",
+            )
+            or ""
+        ).strip()
+
         if uri:
             return uri
-        return f"{getattr(track, 'author', '')}|{getattr(track, 'title', '')}".casefold()
+
+        return (
+            f"{getattr(track, 'author', '')}|"
+            f"{getattr(track, 'title', '')}"
+        ).casefold()
 
     @staticmethod
-    def _dj_generated(track: wavelink.Playable) -> bool:
-        extras = getattr(track, "extras", None)
-        return bool(getattr(extras, "dj_auto", False))
+    def _dj_generated(
+        track: wavelink.Playable,
+    ) -> bool:
+
+        extras = getattr(
+            track,
+            "extras",
+            None,
+        )
+
+        return bool(
+            getattr(
+                extras,
+                "dj_auto",
+                False,
+            )
+        )
 
     @staticmethod
-    def _dj_energy_words(energy: int) -> str:
+    def _dj_energy_words(
+        energy: int,
+    ) -> str:
+
         if energy <= 2:
             return "very chill mellow laid back"
+
         if energy <= 4:
             return "chill smooth relaxed"
+
         if energy <= 6:
             return "groovy mid energy"
+
         if energy <= 8:
             return "high energy upbeat"
+
         return "peak energy hard aggressive"
 
-    def _drop_dj_generated_queue(self, player: MusicPlayer) -> int:
+    def _drop_dj_generated_queue(
+        self,
+        player: MusicPlayer,
+    ) -> int:
+
         removed = 0
-        for track in list(player.queue):
-            if not self._dj_generated(track):
+
+        for track in list(
+            player.queue
+        ):
+
+            if not self._dj_generated(
+                track
+            ):
                 continue
+
             try:
-                player.queue.remove(track)
+                player.queue.remove(
+                    track
+                )
                 removed += 1
             except ValueError:
                 pass
+
         return removed
 
-    def _dj_candidate_ok(self, player: MusicPlayer, track: wavelink.Playable) -> bool:
-        length = int(getattr(track, "length", 0) or 0)
-        if length and (length < 45_000 or length > 12 * 60_000):
-            return False
-        if bool(getattr(track, "is_stream", False)):
+    def _dj_candidate_ok(
+        self,
+        player: MusicPlayer,
+        track: wavelink.Playable,
+    ) -> bool:
+
+        length = int(
+            getattr(
+                track,
+                "length",
+                0,
+            )
+            or 0
+        )
+
+        if length and (
+            length < 45_000
+            or length > 12 * 60_000
+        ):
             return False
 
-        key = self._dj_track_key(track)
-        if not key or key in player.dj_recent:
+        if bool(
+            getattr(
+                track,
+                "is_stream",
+                False,
+            )
+        ):
             return False
-        if self._dj_track_key(player.current) == key:
+
+        key = self._dj_track_key(
+            track
+        )
+
+        if not key:
             return False
-        if any(self._dj_track_key(queued) == key for queued in player.queue):
+
+        if key in player.dj_recent:
             return False
+
+        if (
+            self._dj_track_key(
+                player.current
+            )
+            == key
+        ):
+            return False
+
+        if any(
+            self._dj_track_key(
+                queued
+            )
+            == key
+            for queued in player.queue
+        ):
+            return False
+
         return True
 
-    async def _dj_search(self, player: MusicPlayer, *, requester_id: int = 0) -> list[wavelink.Playable]:
-        style = (player.dj_style or "popular music").strip()
-        energy = self._dj_energy_words(player.dj_energy)
-        suffix = random.choice(("radio", "hits", "songs", "playlist", "mix"))
-        query = f"{style} {energy} {suffix}".strip()
+    async def _dj_search(
+        self,
+        player: MusicPlayer,
+        *,
+        requester_id: int = 0,
+    ) -> list[wavelink.Playable]:
+
+        style = (
+            player.dj_style
+            or "popular music"
+        ).strip()
+
+        energy = self._dj_energy_words(
+            player.dj_energy
+        )
+
+        suffix = random.choice(
+            (
+                "radio",
+                "hits",
+                "songs",
+                "playlist",
+                "mix",
+            )
+        )
+
+        query = (
+            f"{style} "
+            f"{energy} "
+            f"{suffix}"
+        ).strip()
+
         try:
-            results = await wavelink.Playable.search(query)
+
+            results = await wavelink.Playable.search(
+                query
+            )
+
         except Exception:
-            log.exception("AI DJ search failed for %r", query)
+
+            log.exception(
+                "AI DJ search failed for %r",
+                query,
+            )
+
             return []
 
         if not results:
             return []
-        candidates = list(results.tracks if isinstance(results, wavelink.Playlist) else results)
+
+        candidates = list(
+            results.tracks
+            if isinstance(
+                results,
+                wavelink.Playlist,
+            )
+            else results
+        )
+
         candidates = candidates[:15]
-        random.shuffle(candidates)
-        accepted: list[wavelink.Playable] = []
+
+        random.shuffle(
+            candidates
+        )
+
+        accepted = []
+
         for track in candidates:
-            if not self._dj_candidate_ok(player, track):
+
+            if not self._dj_candidate_ok(
+                player,
+                track,
+            ):
                 continue
+
             track.extras = {
                 "requester": requester_id,
                 "dj_auto": True,
                 "dj_style": player.dj_style,
                 "dj_energy": player.dj_energy,
             }
-            accepted.append(track)
+
+            accepted.append(
+                track
+            )
+
         return accepted
 
-    async def _dj_refill(self, player: MusicPlayer, *, requester_id: int = 0) -> int:
-        if not player.dj_enabled or not player.connected:
+    async def _dj_refill(
+        self,
+        player: MusicPlayer,
+        *,
+        requester_id: int = 0,
+    ) -> int:
+
+        if (
+            not player.dj_enabled
+            or not player.connected
+        ):
             return 0
 
         async with player.dj_lock:
-            needed = max(0, player.dj_target_queue - player.queue.count)
+
+            needed = max(
+                0,
+                player.dj_target_queue
+                - player.queue.count,
+            )
+
             if needed <= 0:
                 return 0
 
             added = 0
+
             for _ in range(2):
+
                 if added >= needed:
                     break
-                candidates = await self._dj_search(player, requester_id=requester_id)
+
+                candidates = await self._dj_search(
+                    player,
+                    requester_id=requester_id,
+                )
+
                 for track in candidates:
+
                     if added >= needed:
                         break
-                    if not self._dj_candidate_ok(player, track):
+
+                    if not self._dj_candidate_ok(
+                        player,
+                        track,
+                    ):
                         continue
-                    await player.queue.put_wait(track)
+
+                    await player.queue.put_wait(
+                        track
+                    )
+
                     added += 1
 
             return added
 
-    async def _dj_seed_next(self, player: MusicPlayer, *, requester_id: int = 0, count: int = 2) -> int:
-        candidates = await self._dj_search(player, requester_id=requester_id)
-        chosen = candidates[:max(0, count)]
-        for track in reversed(chosen):
-            player.queue.put_at(0, track)
+    async def _dj_seed_next(
+        self,
+        player: MusicPlayer,
+        *,
+        requester_id: int = 0,
+        count: int = 2,
+    ) -> int:
+
+        candidates = await self._dj_search(
+            player,
+            requester_id=requester_id,
+        )
+
+        chosen = candidates[
+            :max(0, count)
+        ]
+
+        for track in reversed(
+            chosen
+        ):
+
+            player.queue.put_at(
+                0,
+                track,
+            )
+
         return len(chosen)
 
-    async def tool_dj_start(self, ctx: commands.Context, style: str = "", energy: int = 7) -> str:
-        if not ctx.guild or not isinstance(ctx.author, discord.Member):
-            return "DJ mode only works inside a server."
-        if not ctx.author.voice:
-            return "Join a voice channel first."
+    async def tool_dj_start(
+        self,
+        ctx: commands.Context,
+        style: str = "",
+        energy: int = 7,
+    ) -> str:
 
-        player = await self._get_player(ctx)
-        if not isinstance(player, MusicPlayer):
-            return "Lavalink is required for AI DJ mode."
+        if (
+            not ctx.guild
+            or not isinstance(
+                ctx.author,
+                discord.Member,
+            )
+        ):
+            return (
+                "DJ mode only works inside a server."
+            )
+
+        if not ctx.author.voice:
+            return (
+                "Join a voice channel first."
+            )
+
+        player = await self._get_player(
+            ctx
+        )
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
+            return (
+                "Lavalink is required for AI DJ mode."
+            )
 
         player.dj_enabled = True
-        player.dj_style = str(style or player.dj_style or "open format").strip()[:180]
-        player.dj_energy = max(1, min(10, int(energy or 7)))
-        player.queue.mode = wavelink.QueueMode.normal
-        player.autoplay = wavelink.AutoPlayMode.enabled
+
+        player.dj_style = str(
+            style
+            or player.dj_style
+            or "open format"
+        ).strip()[:180]
+
+        player.dj_energy = max(
+            1,
+            min(
+                10,
+                int(energy or 7),
+            ),
+        )
+
+        player.queue.mode = (
+            wavelink.QueueMode.normal
+        )
+
+        player.autoplay = (
+            wavelink.AutoPlayMode.enabled
+        )
 
         try:
             player.auto_queue.clear()
         except Exception:
             pass
 
-        if not player.playing and not player.queue.count:
-            await self._dj_refill(player, requester_id=ctx.author.id)
-        elif player.queue.count < player.dj_target_queue:
-            await self._dj_refill(player, requester_id=ctx.author.id)
+        if (
+            not player.playing
+            and not player.queue.count
+        ):
 
-        if not player.playing and player.queue.count:
-            await player.play(player.queue.get(), populate=True, max_populate=5)
+            await self._dj_refill(
+                player,
+                requester_id=ctx.author.id,
+            )
 
-        await self._touch_controller(player)
-        return (
-            f"DJ mode started in {player.channel.name}. Style: {player.dj_style}; "
-            f"energy: {player.dj_energy}/10; queued: {player.queue.count}."
+        elif (
+            player.queue.count
+            < player.dj_target_queue
+        ):
+
+            await self._dj_refill(
+                player,
+                requester_id=ctx.author.id,
+            )
+
+        if (
+            not player.playing
+            and player.queue.count
+        ):
+
+            await player.play(
+                player.queue.get(),
+                populate=True,
+                max_populate=5,
+            )
+
+        await self._touch_controller(
+            player
         )
 
-    async def tool_dj_stop(self, ctx: commands.Context) -> str:
+        return (
+            f"DJ mode started in "
+            f"{player.channel.name}. "
+            f"Style: {player.dj_style}; "
+            f"energy: {player.dj_energy}/10; "
+            f"queued: {player.queue.count}."
+        )
+
+    async def tool_dj_stop(
+        self,
+        ctx: commands.Context,
+    ) -> str:
+
         player = ctx.voice_client
-        if not isinstance(player, MusicPlayer):
-            return "I am not connected to voice with Lavalink."
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
+            return (
+                "I am not connected to voice with Lavalink."
+            )
+
         player.dj_enabled = False
-        player.autoplay = wavelink.AutoPlayMode.partial
-        removed = self._drop_dj_generated_queue(player)
-        try:
-            player.auto_queue.clear()
-        except Exception:
-            pass
-        await self._touch_controller(player)
-        return f"DJ mode stopped. Removed {removed} automatically selected queued track(s); human requests were kept."
 
-    async def tool_dj_style(self, ctx: commands.Context, style: str) -> str:
-        player = ctx.voice_client
-        if not isinstance(player, MusicPlayer) or not player.dj_enabled:
-            return "DJ mode is not running."
-        style = str(style or "").strip()
-        if not style:
-            return "Give me a style, genre, era, artist direction, or mood."
-        player.dj_style = style[:180]
-        removed = self._drop_dj_generated_queue(player)
-        try:
-            player.auto_queue.clear()
-        except Exception:
-            pass
-        added = await self._dj_seed_next(player, requester_id=ctx.author.id, count=2)
-        await self._dj_refill(player, requester_id=ctx.author.id)
-        await self._touch_controller(player)
-        return f"DJ style changed to {player.dj_style}. Replaced {removed} old DJ pick(s) and seeded {added} new one(s)."
-
-    async def tool_dj_energy(self, ctx: commands.Context, energy: int) -> str:
-        player = ctx.voice_client
-        if not isinstance(player, MusicPlayer) or not player.dj_enabled:
-            return "DJ mode is not running."
-        player.dj_energy = max(1, min(10, int(energy)))
-        removed = self._drop_dj_generated_queue(player)
-        try:
-            player.auto_queue.clear()
-        except Exception:
-            pass
-        added = await self._dj_seed_next(player, requester_id=ctx.author.id, count=2)
-        await self._dj_refill(player, requester_id=ctx.author.id)
-        await self._touch_controller(player)
-        return f"DJ energy set to {player.dj_energy}/10. Refreshed {removed} old pick(s) with {added} new seed(s)."
-
-    async def tool_dj_request(self, ctx: commands.Context, query: str) -> str:
-        if not ctx.guild or not isinstance(ctx.author, discord.Member):
-            return "Music requests only work inside a server."
-        if not ctx.author.voice:
-            return "Join a voice channel first."
-        player = await self._get_player(ctx)
-        if not isinstance(player, MusicPlayer):
-            return "Lavalink is unavailable for DJ requests."
-
-        query = str(query or "").strip()
-        if not query:
-            return "No song request was provided."
-        results = await wavelink.Playable.search(query)
-        if not results:
-            return f"No results for {query}."
-        track = results.tracks[0] if isinstance(results, wavelink.Playlist) else results[0]
-        track.extras = {"requester": ctx.author.id, "dj_request": True}
-        player.queue.put_at(0, track)
-        if not player.playing:
-            await player.play(player.queue.get(), populate=player.dj_enabled, max_populate=5)
-        return f"Requested track queued next: {track.title} by {track.author or 'Unknown'}."
-
-    async def tool_dj_status(self, ctx: commands.Context) -> str:
-        player = ctx.voice_client
-        if not isinstance(player, MusicPlayer):
-            return "I am not connected to voice."
-        if not player.dj_enabled:
-            return f"DJ mode is off. {player.queue.count} track(s) are queued."
-        current = getattr(player.current, "title", None) or "nothing"
-        return (
-            f"DJ mode is on. Style: {player.dj_style or 'open format'}; "
-            f"energy: {player.dj_energy}/10; now playing: {current}; "
-            f"standard queue: {player.queue.count}; recommendation queue: {player.auto_queue.count}."
+        player.autoplay = (
+            wavelink.AutoPlayMode.partial
         )
 
-    async def tool_music_play(self, ctx: commands.Context, query: str) -> str:
-        if not ctx.guild or not isinstance(ctx.author, discord.Member):
-            return "Music only works inside a server."
-        if not ctx.author.voice:
-            return "Join a voice channel first."
+        removed = self._drop_dj_generated_queue(
+            player
+        )
 
-        # 1. Attachment Check
-        if ctx.message and ctx.message.attachments:
-            attachment = ctx.message.attachments[0]
-            if attachment.filename.lower().endswith(('.mp3', '.wav', '.flac', '.m4a', '.ogg')):
-                await self._play_local_file(ctx, attachment.url)
-                return f"Playing attachment: {attachment.filename}"
+        try:
+            player.auto_queue.clear()
+        except Exception:
+            pass
 
-        # 2. Local System File Check
-        cleaned_query = query.strip('"\'')
-        if os.path.exists(cleaned_query) and os.path.isfile(cleaned_query):
-            await self._play_local_file(ctx, cleaned_query)
-            return f"Playing local file: {os.path.basename(cleaned_query)}"
+        await self._touch_controller(
+            player
+        )
 
-        # 3. Lavalink Playback Fallback
-        player = await self._get_player(ctx)
-        if not isinstance(player, MusicPlayer):
-            await self._play_local_file(ctx, query)
-            return f"Playing via direct audio stream: {query}"
+        return (
+            f"DJ mode stopped. "
+            f"Removed {removed} automatically "
+            f"selected queued track(s); "
+            f"human requests were kept."
+        )
 
-        results = await wavelink.Playable.search(query)
-        if not results:
-            return f"No results for {query}."
-        track = results.tracks[0] if isinstance(results, wavelink.Playlist) else results[0]
-        track.extras = {"requester": ctx.author.id}
-        await player.queue.put_wait(track)
-        if not player.playing:
-            await player.play(player.queue.get(), populate=player.dj_enabled, max_populate=5)
-        return f"Queued {track.title} by {track.author or 'Unknown'}."
+    async def tool_dj_style(
+        self,
+        ctx: commands.Context,
+        style: str,
+    ) -> str:
 
-    async def tool_music_skip(self, ctx: commands.Context, count: int = 1) -> str:
         player = ctx.voice_client
+
+        if (
+            not isinstance(
+                player,
+                MusicPlayer,
+            )
+            or not player.dj_enabled
+        ):
+            return (
+                "DJ mode is not running."
+            )
+
+        style = str(
+            style or ""
+        ).strip()
+
+        if not style:
+            return (
+                "Give me a style, genre, era, "
+                "artist direction, or mood."
+            )
+
+        player.dj_style = style[:180]
+
+        removed = (
+            self._drop_dj_generated_queue(
+                player
+            )
+        )
+
+        try:
+            player.auto_queue.clear()
+        except Exception:
+            pass
+
+        added = await self._dj_seed_next(
+            player,
+            requester_id=ctx.author.id,
+            count=2,
+        )
+
+        await self._dj_refill(
+            player,
+            requester_id=ctx.author.id,
+        )
+
+        await self._touch_controller(
+            player
+        )
+
+        return (
+            f"DJ style changed to "
+            f"{player.dj_style}. "
+            f"Replaced {removed} old DJ pick(s) "
+            f"and seeded {added} new one(s)."
+        )
+
+    async def tool_dj_energy(
+        self,
+        ctx: commands.Context,
+        energy: int,
+    ) -> str:
+
+        player = ctx.voice_client
+
+        if (
+            not isinstance(
+                player,
+                MusicPlayer,
+            )
+            or not player.dj_enabled
+        ):
+            return (
+                "DJ mode is not running."
+            )
+
+        player.dj_energy = max(
+            1,
+            min(
+                10,
+                int(energy),
+            ),
+        )
+
+        removed = (
+            self._drop_dj_generated_queue(
+                player
+            )
+        )
+
+        try:
+            player.auto_queue.clear()
+        except Exception:
+            pass
+
+        added = await self._dj_seed_next(
+            player,
+            requester_id=ctx.author.id,
+            count=2,
+        )
+
+        await self._dj_refill(
+            player,
+            requester_id=ctx.author.id,
+        )
+
+        await self._touch_controller(
+            player
+        )
+
+        return (
+            f"DJ energy set to "
+            f"{player.dj_energy}/10. "
+            f"Refreshed {removed} old pick(s) "
+            f"with {added} new seed(s)."
+        )
+
+    async def tool_dj_request(
+        self,
+        ctx: commands.Context,
+        query: str,
+    ) -> str:
+
+        if (
+            not ctx.guild
+            or not isinstance(
+                ctx.author,
+                discord.Member,
+            )
+        ):
+            return (
+                "Music requests only work inside a server."
+            )
+
+        if not ctx.author.voice:
+            return (
+                "Join a voice channel first."
+            )
+
+        player = await self._get_player(
+            ctx
+        )
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
+            return (
+                "Lavalink is unavailable for DJ requests."
+            )
+
+        query = str(
+            query or ""
+        ).strip()
+
+        if not query:
+            return (
+                "No song request was provided."
+            )
+
+        try:
+
+            results = await wavelink.Playable.search(
+                query
+            )
+
+        except Exception as exc:
+
+            log.exception(
+                "DJ request search failed: %s",
+                exc,
+            )
+
+            return (
+                f"Search failed for `{query}`."
+            )
+
+        if not results:
+            return (
+                f"No results for {query}."
+            )
+
+        track = (
+            results.tracks[0]
+            if isinstance(
+                results,
+                wavelink.Playlist,
+            )
+            else results[0]
+        )
+
+        track.extras = {
+            "requester": ctx.author.id,
+            "dj_request": True,
+        }
+
+        player.queue.put_at(
+            0,
+            track,
+        )
+
+        if not player.playing:
+
+            await player.play(
+                player.queue.get(),
+                populate=player.dj_enabled,
+                max_populate=5,
+            )
+
+        return (
+            f"Requested track queued next: "
+            f"{track.title} by "
+            f"{track.author or 'Unknown'}."
+        )
+
+    async def tool_dj_status(
+        self,
+        ctx: commands.Context,
+    ) -> str:
+
+        player = ctx.voice_client
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
+            return (
+                "I am not connected to voice."
+            )
+
+        if not player.dj_enabled:
+            return (
+                f"DJ mode is off. "
+                f"{player.queue.count} track(s) "
+                f"are queued."
+            )
+
+        current = (
+            getattr(
+                player.current,
+                "title",
+                None,
+            )
+            or "nothing"
+        )
+
+        return (
+            f"DJ mode is on. "
+            f"Style: {player.dj_style or 'open format'}; "
+            f"energy: {player.dj_energy}/10; "
+            f"now playing: {current}; "
+            f"standard queue: {player.queue.count}; "
+            f"recommendation queue: "
+            f"{player.auto_queue.count}."
+        )
+
+    async def tool_music_play(
+        self,
+        ctx: commands.Context,
+        query: str,
+    ) -> str:
+
+        if (
+            not ctx.guild
+            or not isinstance(
+                ctx.author,
+                discord.Member,
+            )
+        ):
+            return (
+                "Music only works inside a server."
+            )
+
+        if not ctx.author.voice:
+            return (
+                "Join a voice channel first."
+            )
+
+        # Attachment
+        if (
+            ctx.message
+            and ctx.message.attachments
+        ):
+
+            attachment = (
+                ctx.message.attachments[0]
+            )
+
+            if attachment.filename.lower().endswith(
+                SUPPORTED_AUDIO_EXTENSIONS
+            ):
+
+                await self._play_local_file(
+                    ctx,
+                    attachment.url,
+                )
+
+                return (
+                    f"Playing attachment: "
+                    f"{attachment.filename}"
+                )
+
+        # Local filesystem path
+        cleaned_query = (
+            query.strip("\"'")
+        )
+
+        local_path = os.path.abspath(
+            os.path.expanduser(
+                cleaned_query
+            )
+        )
+
+        if os.path.isfile(
+            local_path
+        ):
+
+            await self._play_local_file(
+                ctx,
+                local_path,
+            )
+
+            return (
+                f"Playing local file: "
+                f"{os.path.basename(local_path)}"
+            )
+
+        # Normal Lavalink search
+        player = await self._get_player(
+            ctx
+        )
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            await self._play_local_file(
+                ctx,
+                query,
+            )
+
+            return (
+                f"Playing via direct audio stream: "
+                f"{query}"
+            )
+
+        try:
+
+            results = await wavelink.Playable.search(
+                query
+            )
+
+        except Exception as exc:
+
+            log.exception(
+                "Music search failed: %s",
+                exc,
+            )
+
+            return (
+                f"Search failed for `{query}`."
+            )
+
+        if not results:
+            return (
+                f"No results for {query}."
+            )
+
+        track = (
+            results.tracks[0]
+            if isinstance(
+                results,
+                wavelink.Playlist,
+            )
+            else results[0]
+        )
+
+        track.extras = {
+            "requester": ctx.author.id
+        }
+
+        await player.queue.put_wait(
+            track
+        )
+
+        if not player.playing:
+
+            await player.play(
+                player.queue.get(),
+                populate=player.dj_enabled,
+                max_populate=5,
+            )
+
+        return (
+            f"Queued {track.title} "
+            f"by {track.author or 'Unknown'}."
+        )
+
+    async def tool_music_skip(
+        self,
+        ctx: commands.Context,
+        count: int = 1,
+    ) -> str:
+
+        player = ctx.voice_client
+
         if not player:
-            return "Nothing is playing."
-        if isinstance(player, MusicPlayer):
+            return (
+                "Nothing is playing."
+            )
+
+        if isinstance(
+            player,
+            MusicPlayer,
+        ):
+
             if not player.current:
-                return "Nothing is playing."
-            count = max(1, min(20, int(count or 1)))
+                return (
+                    "Nothing is playing."
+                )
+
+            count = max(
+                1,
+                min(
+                    20,
+                    int(count or 1),
+                ),
+            )
+
             removed = 0
-            for _ in range(count - 1):
+
+            for _ in range(
+                count - 1
+            ):
+
                 if not player.queue.count:
                     break
-                player.queue.get()
-                removed += 1
-            await player.skip(force=True)
-            return f"Skipped {removed + 1} track(s)."
-        else:
-            player.stop()
-            return "Skipped active local file playback."
 
-    async def tool_music_pause(self, ctx: commands.Context) -> str:
-        player = ctx.voice_client
-        if not player:
-            return "Nothing is playing."
-        if isinstance(player, MusicPlayer):
-            await player.pause(True)
-            await self._touch_controller(player)
+                player.queue.get()
+
+                removed += 1
+
+            await player.skip(
+                force=True
+            )
+
+            return (
+                f"Skipped {removed + 1} track(s)."
+            )
+
         else:
+
+            player.stop()
+
+            return (
+                "Skipped active local file playback."
+            )
+
+    async def tool_music_pause(
+        self,
+        ctx: commands.Context,
+    ) -> str:
+
+        player = ctx.voice_client
+
+        if not player:
+            return (
+                "Nothing is playing."
+            )
+
+        if isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            await player.pause(True)
+
+            await self._touch_controller(
+                player
+            )
+
+        else:
+
             if player.is_playing():
                 player.pause()
+
         return "Playback paused."
 
-    async def tool_music_resume(self, ctx: commands.Context) -> str:
+    async def tool_music_resume(
+        self,
+        ctx: commands.Context,
+    ) -> str:
+
         player = ctx.voice_client
+
         if not player:
-            return "Nothing is loaded."
-        if isinstance(player, MusicPlayer):
+            return (
+                "Nothing is loaded."
+            )
+
+        if isinstance(
+            player,
+            MusicPlayer,
+        ):
+
             await player.pause(False)
-            await self._touch_controller(player)
+
+            await self._touch_controller(
+                player
+            )
+
         else:
+
             if player.is_paused():
                 player.resume()
+
         return "Playback resumed."
 
-    async def tool_music_volume(self, ctx: commands.Context, volume: int) -> str:
-        player = ctx.voice_client
-        if not player:
-            return "I am not connected to voice."
-        volume = max(0, min(200, int(volume)))
-        if isinstance(player, MusicPlayer):
-            await player.set_volume(volume)
-            await self._touch_controller(player)
-        return f"Volume set to {volume}%."
+    async def tool_music_volume(
+        self,
+        ctx: commands.Context,
+        volume: int,
+    ) -> str:
 
-    async def tool_music_stop(self, ctx: commands.Context) -> str:
         player = ctx.voice_client
+
         if not player:
-            return "I am not connected to voice."
-        if isinstance(player, MusicPlayer):
+            return (
+                "I am not connected to voice."
+            )
+
+        volume = max(
+            0,
+            min(
+                200,
+                int(volume),
+            ),
+        )
+
+        if isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            await player.set_volume(
+                volume
+            )
+
+            await self._touch_controller(
+                player
+            )
+
+        return (
+            f"Volume set to {volume}%."
+        )
+
+    async def tool_music_stop(
+        self,
+        ctx: commands.Context,
+    ) -> str:
+
+        player = ctx.voice_client
+
+        if not player:
+            return (
+                "I am not connected to voice."
+            )
+
+        if isinstance(
+            player,
+            MusicPlayer,
+        ):
+
             player.dj_enabled = False
+
             player.queue.clear()
             player.queue.reset()
+
             try:
                 player.auto_queue.clear()
             except Exception:
                 pass
+
             await player.teardown_controller()
+
         await player.disconnect()
-        return "Playback stopped and I disconnected from voice."
 
-    # ── Commands ───────────────────────────────────────────────────────────────
+        return (
+            "Playback stopped and I disconnected "
+            "from voice."
+        )
 
-    @commands.hybrid_command(name="dj", usage="dj [style]")
+    # ── Commands ──────────────────────────────────────────────────────────
+
+    @commands.hybrid_command(
+        name="dj",
+        usage="dj [style]",
+    )
     @commands.guild_only()
     @is_in_vc()
-    async def dj(self, ctx: commands.Context, *, style: str = "open format"):
-        result = await self.tool_dj_start(ctx, style=style, energy=7)
-        await ctx.send(embed=success_embed(f"🎛️ {result}"))
+    async def dj(
+        self,
+        ctx: commands.Context,
+        *,
+        style: str = "open format",
+    ):
 
-    @commands.hybrid_command(name="djoff", aliases=["stopdj"], usage="djoff")
+        result = await self.tool_dj_start(
+            ctx,
+            style=style,
+            energy=7,
+        )
+
+        await ctx.send(
+            embed=success_embed(
+                f"🎛️ {result}"
+            )
+        )
+
+    @commands.hybrid_command(
+        name="djoff",
+        aliases=["stopdj"],
+        usage="djoff",
+    )
     @commands.guild_only()
-    async def djoff(self, ctx: commands.Context):
-        result = await self.tool_dj_stop(ctx)
-        await ctx.send(embed=success_embed(result))
+    async def djoff(
+        self,
+        ctx: commands.Context,
+    ):
 
-    @commands.hybrid_command(name="djstyle", usage="djstyle <style>")
+        result = await self.tool_dj_stop(
+            ctx
+        )
+
+        await ctx.send(
+            embed=success_embed(result)
+        )
+
+    @commands.hybrid_command(
+        name="djstyle",
+        usage="djstyle <style>",
+    )
     @commands.guild_only()
-    async def djstyle(self, ctx: commands.Context, *, style: str):
-        result = await self.tool_dj_style(ctx, style)
-        await ctx.send(embed=success_embed(result))
+    async def djstyle(
+        self,
+        ctx: commands.Context,
+        *,
+        style: str,
+    ):
 
-    @commands.hybrid_command(name="djenergy", usage="djenergy <1-10>")
+        result = await self.tool_dj_style(
+            ctx,
+            style,
+        )
+
+        await ctx.send(
+            embed=success_embed(result)
+        )
+
+    @commands.hybrid_command(
+        name="djenergy",
+        usage="djenergy <1-10>",
+    )
     @commands.guild_only()
-    async def djenergy(self, ctx: commands.Context, energy: int):
-        result = await self.tool_dj_energy(ctx, energy)
-        await ctx.send(embed=success_embed(result))
+    async def djenergy(
+        self,
+        ctx: commands.Context,
+        energy: int,
+    ):
 
-    @commands.hybrid_command(name="djrequest", aliases=["request"], usage="djrequest <song>")
+        result = await self.tool_dj_energy(
+            ctx,
+            energy,
+        )
+
+        await ctx.send(
+            embed=success_embed(result)
+        )
+
+    @commands.hybrid_command(
+        name="djrequest",
+        aliases=["request"],
+        usage="djrequest <song>",
+    )
     @commands.guild_only()
     @is_in_vc()
-    async def djrequest(self, ctx: commands.Context, *, query: str):
-        result = await self.tool_dj_request(ctx, query)
-        await ctx.send(embed=success_embed(result))
+    async def djrequest(
+        self,
+        ctx: commands.Context,
+        *,
+        query: str,
+    ):
 
-    @commands.hybrid_command(name="djstatus", usage="djstatus")
+        result = await self.tool_dj_request(
+            ctx,
+            query,
+        )
+
+        await ctx.send(
+            embed=success_embed(result)
+        )
+
+    @commands.hybrid_command(
+        name="djstatus",
+        usage="djstatus",
+    )
     @commands.guild_only()
-    async def djstatus(self, ctx: commands.Context):
-        result = await self.tool_dj_status(ctx)
-        await ctx.send(embed=info_embed(result))
+    async def djstatus(
+        self,
+        ctx: commands.Context,
+    ):
 
-    @commands.hybrid_command(name="play", aliases=["p"], usage="play [query or URL]")
+        result = await self.tool_dj_status(
+            ctx
+        )
+
+        await ctx.send(
+            embed=info_embed(result)
+        )
+
+    @commands.hybrid_command(
+        name="play",
+        aliases=["p"],
+        usage="play [query or URL]",
+    )
     @commands.guild_only()
     @is_in_vc()
-    async def play(self, ctx: commands.Context, *, query: str = None):
+    async def play(
+        self,
+        ctx: commands.Context,
+        *,
+        query: str = None,
+    ):
         """Play a track, local file, attachment, or add it to the queue."""
-        # Immediate defer prevents Discord interaction timeout (404 Unknown Interaction)
+
         await ctx.defer()
 
-        # 1. Check for attached files
-        if ctx.message and ctx.message.attachments:
-            attachment = ctx.message.attachments[0]
-            if attachment.filename.lower().endswith(('.mp3', '.wav', '.flac', '.m4a', '.ogg')):
-                return await self._play_local_file(ctx, attachment.url)
-            else:
-                return await ctx.send(embed=error_embed("Unsupported attachment format. Provide MP3, WAV, FLAC, M4A, or OGG."))
+        # Attachment
+        if (
+            ctx.message
+            and ctx.message.attachments
+        ):
+
+            attachment = (
+                ctx.message.attachments[0]
+            )
+
+            if attachment.filename.lower().endswith(
+                SUPPORTED_AUDIO_EXTENSIONS
+            ):
+
+                return await self._play_local_file(
+                    ctx,
+                    attachment.url,
+                )
+
+            return await ctx.send(
+                embed=error_embed(
+                    "Unsupported attachment format. "
+                    "Provide MP3, WAV, FLAC, M4A, OGG, AAC, or OPUS."
+                )
+            )
 
         if not query:
-            return await ctx.send(embed=error_embed("Provide a track name, file path, or upload an audio file."))
 
-        # 2. Check for local system file paths
-        cleaned_query = query.strip('"\'')
-        if os.path.exists(cleaned_query) and os.path.isfile(cleaned_query):
-            return await self._play_local_file(ctx, cleaned_query)
+            return await ctx.send(
+                embed=error_embed(
+                    "Provide a track name, file path, "
+                    "or upload an audio file."
+                )
+            )
 
-        # 3. Handle standard Lavalink query search
-        player = await self._get_player(ctx)
-        if not isinstance(player, MusicPlayer):
-            return await self._play_local_file(ctx, query)
+        # Local filesystem path
+        cleaned_query = (
+            query.strip("\"'")
+        )
 
-        tracks = await wavelink.Playable.search(query)
+        local_path = os.path.abspath(
+            os.path.expanduser(
+                cleaned_query
+            )
+        )
+
+        if os.path.isfile(
+            local_path
+        ):
+
+            return await self._play_local_file(
+                ctx,
+                local_path,
+            )
+
+        # Normal Lavalink query
+        player = await self._get_player(
+            ctx
+        )
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            return await self._play_local_file(
+                ctx,
+                query,
+            )
+
+        try:
+
+            tracks = await wavelink.Playable.search(
+                query
+            )
+
+        except Exception as exc:
+
+            log.exception(
+                "Play search failed: %s",
+                exc,
+            )
+
+            return await ctx.send(
+                embed=error_embed(
+                    f"Search failed for `{query}`:\n"
+                    f"`{exc}`"
+                )
+            )
+
         if not tracks:
-            return await ctx.send(embed=error_embed(f"No results for `{query}`."))
 
-        if isinstance(tracks, wavelink.Playlist):
+            return await ctx.send(
+                embed=error_embed(
+                    f"No results for `{query}`."
+                )
+            )
+
+        if isinstance(
+            tracks,
+            wavelink.Playlist,
+        ):
+
             for t in tracks.tracks:
-                t.extras = {"requester": ctx.author.id}
-                await player.queue.put_wait(t)
-            await ctx.send(embed=success_embed(
-                f"📋 Added **{tracks.name}** — `{len(tracks.tracks)}` tracks."
-            ))
+
+                t.extras = {
+                    "requester": ctx.author.id
+                }
+
+                await player.queue.put_wait(
+                    t
+                )
+
+            await ctx.send(
+                embed=success_embed(
+                    f"📋 Added **{tracks.name}** — "
+                    f"`{len(tracks.tracks)}` tracks."
+                )
+            )
+
         else:
+
             track = tracks[0]
-            track.extras = {"requester": ctx.author.id}
-            await player.queue.put_wait(track)
+
+            track.extras = {
+                "requester": ctx.author.id
+            }
+
+            await player.queue.put_wait(
+                track
+            )
+
             if player.playing:
-                await ctx.send(embed=success_embed(
-                    f"🎵 Queued **{_trim(track.title)}** — position `{player.queue.count}`."
-                ))
+
+                await ctx.send(
+                    embed=success_embed(
+                        f"🎵 Queued **"
+                        f"{_trim(track.title)}"
+                        f"** — position "
+                        f"`{player.queue.count}`."
+                    )
+                )
 
         if not player.playing:
-            await player.play(player.queue.get())
 
-    @commands.hybrid_command(name="playnext", aliases=["pn"], usage="playnext <query>")
+            await player.play(
+                player.queue.get(),
+                populate=player.dj_enabled,
+                max_populate=5,
+            )
+
+    @commands.hybrid_command(
+        name="playnext",
+        aliases=["pn"],
+        usage="playnext <query>",
+    )
     @commands.guild_only()
     @is_in_vc()
-    async def playnext(self, ctx: commands.Context, *, query: str):
-        player = await self._get_player(ctx)
-        if not isinstance(player, MusicPlayer):
-            return await ctx.send(embed=error_embed("Playnext is only available with Lavalink connected."))
+    async def playnext(
+        self,
+        ctx: commands.Context,
+        *,
+        query: str,
+    ):
 
-        tracks = await wavelink.Playable.search(query)
+        player = await self._get_player(
+            ctx
+        )
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            return await ctx.send(
+                embed=error_embed(
+                    "Playnext is only available "
+                    "with Lavalink connected."
+                )
+            )
+
+        try:
+
+            tracks = await wavelink.Playable.search(
+                query
+            )
+
+        except Exception as exc:
+
+            log.exception(
+                "Playnext search failed: %s",
+                exc,
+            )
+
+            return await ctx.send(
+                embed=error_embed(
+                    f"Search failed for `{query}`."
+                )
+            )
+
         if not tracks:
-            return await ctx.send(embed=error_embed(f"No results for `{query}`."))
 
-        track = tracks[0] if not isinstance(tracks, wavelink.Playlist) else tracks.tracks[0]
-        track.extras = {"requester": ctx.author.id}
-        player.queue.put_at(0, track)
-        await ctx.send(embed=success_embed(f"**{_trim(track.title)}** queued to play next."))
+            return await ctx.send(
+                embed=error_embed(
+                    f"No results for `{query}`."
+                )
+            )
+
+        track = (
+            tracks[0]
+            if not isinstance(
+                tracks,
+                wavelink.Playlist,
+            )
+            else tracks.tracks[0]
+        )
+
+        track.extras = {
+            "requester": ctx.author.id
+        }
+
+        player.queue.put_at(
+            0,
+            track,
+        )
+
+        await ctx.send(
+            embed=success_embed(
+                f"**{_trim(track.title)}** "
+                f"queued to play next."
+            )
+        )
+
         if not player.playing:
-            await player.play(player.queue.get())
 
-    @commands.hybrid_command(name="pause", usage="pause")
+            await player.play(
+                player.queue.get(),
+                populate=player.dj_enabled,
+                max_populate=5,
+            )
+
+    @commands.hybrid_command(
+        name="pause",
+        usage="pause",
+    )
     @commands.guild_only()
     @bot_in_vc()
-    async def pause(self, ctx: commands.Context):
-        res = await self.tool_music_pause(ctx)
-        await ctx.send(embed=success_embed(res))
+    async def pause(
+        self,
+        ctx: commands.Context,
+    ):
 
-    @commands.hybrid_command(name="skip", aliases=["s", "next"], usage="skip [count]")
+        res = await self.tool_music_pause(
+            ctx
+        )
+
+        await ctx.send(
+            embed=success_embed(res)
+        )
+
+    @commands.hybrid_command(
+        name="skip",
+        aliases=["s", "next"],
+        usage="skip [count]",
+    )
     @commands.guild_only()
     @bot_in_vc()
-    async def skip(self, ctx: commands.Context, count: int = 1):
-        res = await self.tool_music_skip(ctx, count)
-        await ctx.send(embed=success_embed(res))
+    async def skip(
+        self,
+        ctx: commands.Context,
+        count: int = 1,
+    ):
 
-    @commands.hybrid_command(name="stop", usage="stop")
+        res = await self.tool_music_skip(
+            ctx,
+            count,
+        )
+
+        await ctx.send(
+            embed=success_embed(res)
+        )
+
+    @commands.hybrid_command(
+        name="stop",
+        usage="stop",
+    )
     @commands.guild_only()
     @bot_in_vc()
-    async def stop(self, ctx: commands.Context):
-        res = await self.tool_music_stop(ctx)
-        await ctx.send(embed=success_embed(res))
+    async def stop(
+        self,
+        ctx: commands.Context,
+    ):
 
-    @commands.hybrid_command(name="disconnect", aliases=["dc", "leave"], usage="disconnect")
+        res = await self.tool_music_stop(
+            ctx
+        )
+
+        await ctx.send(
+            embed=success_embed(res)
+        )
+
+    @commands.hybrid_command(
+        name="disconnect",
+        aliases=["dc", "leave"],
+        usage="disconnect",
+    )
     @commands.guild_only()
     @bot_in_vc()
-    async def disconnect(self, ctx: commands.Context):
+    async def disconnect(
+        self,
+        ctx: commands.Context,
+    ):
+
         player = ctx.voice_client
-        if isinstance(player, MusicPlayer):
+
+        if isinstance(
+            player,
+            MusicPlayer,
+        ):
+
             player.queue.clear()
-            await player.teardown_controller()
-        await player.disconnect()
-        await ctx.send(embed=success_embed("👋 Disconnected."))
 
-    @commands.hybrid_command(name="queue", aliases=["q"], usage="queue [page]")
+            await player.teardown_controller()
+
+        await player.disconnect()
+
+        await ctx.send(
+            embed=success_embed(
+                "👋 Disconnected."
+            )
+        )
+
+    @commands.hybrid_command(
+        name="queue",
+        aliases=["q"],
+        usage="queue [page]",
+    )
     @commands.guild_only()
     @bot_in_vc()
-    async def queue_cmd(self, ctx: commands.Context, page: int = 1):
-        player = ctx.voice_client
-        if not isinstance(player, MusicPlayer):
-            return await ctx.send(embed=info_embed("Standard queue disabled in native FFmpeg fallback mode."))
+    async def queue_cmd(
+        self,
+        ctx: commands.Context,
+        page: int = 1,
+    ):
 
-        tracks = list(player.queue)
-        if not tracks and not player.current:
-            return await ctx.send(embed=info_embed("The queue is empty."))
+        player = ctx.voice_client
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            return await ctx.send(
+                embed=info_embed(
+                    "Standard queue disabled "
+                    "in native FFmpeg fallback mode."
+                )
+            )
+
+        tracks = list(
+            player.queue
+        )
+
+        if (
+            not tracks
+            and not player.current
+        ):
+
+            return await ctx.send(
+                embed=info_embed(
+                    "The queue is empty."
+                )
+            )
 
         per_page = 10
-        pages = max(1, (len(tracks) + per_page - 1) // per_page)
-        page = max(1, min(page, pages))
-        start = (page - 1) * per_page
-        slice_ = tracks[start:start + per_page]
 
-        e = discord.Embed(title="🎵 Queue", color=COLOR_PLAYING, timestamp=discord.utils.utcnow())
+        pages = max(
+            1,
+            (
+                len(tracks)
+                + per_page
+                - 1
+            )
+            // per_page,
+        )
+
+        page = max(
+            1,
+            min(
+                page,
+                pages,
+            ),
+        )
+
+        start = (
+            page - 1
+        ) * per_page
+
+        slice_ = tracks[
+            start:start + per_page
+        ]
+
+        e = discord.Embed(
+            title="🎵 Queue",
+            color=COLOR_PLAYING,
+            timestamp=discord.utils.utcnow(),
+        )
 
         if player.current:
+
             e.add_field(
                 name="▶️ Now Playing",
                 value=(
-                    f"[{_trim(player.current.title)}]({player.current.uri})\n"
-                    f"{_progress_bar(player.position, player.current.length, 14)} "
-                    f"`{_fmt_duration(player.position)}/{_fmt_duration(player.current.length)}`"
+                    f"[{_trim(player.current.title)}]"
+                    f"({player.current.uri})\n"
+                    f"{_progress_bar("
+                    f"player.position, "
+                    f"player.current.length, "
+                    f"14"
+                    f")} "
+                    f"`{_fmt_duration(player.position)}/"
+                    f"{_fmt_duration(player.current.length)}`"
                 ),
                 inline=False,
             )
 
         if slice_:
+
             lines = []
-            for i, t in enumerate(slice_, start=start + 1):
-                lines.append(f"`{i}.` [{_trim(t.title)}]({t.uri}) — `{_fmt_duration(t.length)}`")
-            e.add_field(name=f"Up Next (page {page}/{pages})", value="\n".join(lines), inline=False)
 
-        total_dur = sum(t.length for t in tracks)
-        e.set_footer(text=f"{len(tracks)} tracks | {_fmt_duration(total_dur)} total")
-        await ctx.send(embed=e)
+            for i, t in enumerate(
+                slice_,
+                start=start + 1,
+            ):
 
-    @commands.hybrid_command(name="clearqueue", aliases=["cq"], usage="clearqueue")
-    @commands.guild_only()
-    @bot_in_vc()
-    async def clearqueue(self, ctx: commands.Context):
-        player = ctx.voice_client
-        if isinstance(player, MusicPlayer):
-            count = player.queue.count
-            player.queue.clear()
-            await ctx.send(embed=success_embed(f"Cleared `{count}` track(s) from the queue."))
+                lines.append(
+                    f"`{i}.` "
+                    f"[{_trim(t.title)}]"
+                    f"({t.uri}) — "
+                    f"`{_fmt_duration(t.length)}`"
+                )
 
-    @commands.hybrid_command(name="shuffle", usage="shuffle")
-    @commands.guild_only()
-    @bot_in_vc()
-    async def shuffle(self, ctx: commands.Context):
-        player = ctx.voice_client
-        if isinstance(player, MusicPlayer):
-            if player.queue.count < 2:
-                return await ctx.send(embed=error_embed("Need at least 2 tracks to shuffle."))
-            player.queue.shuffle()
-            await ctx.send(embed=success_embed("🔀 Queue shuffled."))
-
-    @commands.hybrid_command(name="volume", aliases=["vol"], usage="volume <0-200>")
-    @commands.guild_only()
-    @bot_in_vc()
-    async def volume(self, ctx: commands.Context, vol: int):
-        res = await self.tool_music_volume(ctx, vol)
-        await ctx.send(embed=success_embed(res))
-
-    @commands.hybrid_command(name="loop", usage="loop [track|queue|off]")
-    @commands.guild_only()
-    @bot_in_vc()
-    async def loop(self, ctx: commands.Context, mode: str = None):
-        player = ctx.voice_client
-        if not isinstance(player, MusicPlayer):
-            return await ctx.send(embed=error_embed("Looping is only supported with Lavalink."))
-
-        if mode is None or mode.lower() == "off":
-            player.queue.mode = wavelink.QueueMode.normal
-            msg = "🔁 Loop disabled."
-        elif mode.lower() in ("track", "one"):
-            player.queue.mode = wavelink.QueueMode.loop
-            msg = "🔂 Looping current track."
-        elif mode.lower() in ("queue", "all"):
-            player.queue.mode = wavelink.QueueMode.loop_all
-            msg = "🔁 Looping entire queue."
-        else:
-            return await ctx.send(embed=error_embed("Valid modes: `track`, `queue`, `off`."))
-
-        await self._touch_controller(player)
-        await ctx.send(embed=success_embed(msg))
-
-    @commands.command(name="bassboost", usage="bassboost [level 0-5]")
-    @commands.guild_only()
-    @bot_in_vc()
-    async def bassboost(self, ctx: commands.Context, level: int = 3):
-        player = ctx.voice_client
-        if not isinstance(player, MusicPlayer):
-            return await ctx.send(embed=error_embed("Filters require Lavalink."))
-        level = max(0, min(5, level))
-        gain = level * 0.08
-        filters: wavelink.Filters = player.filters
-        filters.equalizer.set(bands=[
-            {"band": 0, "gain": gain},
-            {"band": 1, "gain": gain * 0.85},
-            {"band": 2, "gain": gain * 0.5},
-        ])
-        await player.set_filters(filters)
-        if level == 0:
-            await ctx.send(embed=success_embed("Bass boost removed."))
-        else:
-            await ctx.send(embed=success_embed(f"🎸 Bass boost level `{level}`."))
-
-    async def _touch_controller(self, player: MusicPlayer):
-        if not getattr(player, "controller", None) or not getattr(player, "controller_view", None):
-            return
-        try:
-            player.controller_view._sync_buttons()
-            await player.controller.edit(
-                embed=self.build_now_playing(player), view=player.controller_view
+            e.add_field(
+                name=(
+                    f"Up Next "
+                    f"(page {page}/{pages})"
+                ),
+                value="\n".join(lines),
+                inline=False,
             )
+
+        total_dur = sum(
+            t.length
+            for t in tracks
+        )
+
+        e.set_footer(
+            text=(
+                f"{len(tracks)} tracks | "
+                f"{_fmt_duration(total_dur)} total"
+            )
+        )
+
+        await ctx.send(
+            embed=e
+        )
+
+    @commands.hybrid_command(
+        name="clearqueue",
+        aliases=["cq"],
+        usage="clearqueue",
+    )
+    @commands.guild_only()
+    @bot_in_vc()
+    async def clearqueue(
+        self,
+        ctx: commands.Context,
+    ):
+
+        player = ctx.voice_client
+
+        if isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            count = player.queue.count
+
+            player.queue.clear()
+
+            await ctx.send(
+                embed=success_embed(
+                    f"Cleared `{count}` "
+                    f"track(s) from the queue."
+                )
+            )
+
+    @commands.hybrid_command(
+        name="shuffle",
+        usage="shuffle",
+    )
+    @commands.guild_only()
+    @bot_in_vc()
+    async def shuffle(
+        self,
+        ctx: commands.Context,
+    ):
+
+        player = ctx.voice_client
+
+        if isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            if player.queue.count < 2:
+
+                return await ctx.send(
+                    embed=error_embed(
+                        "Need at least 2 tracks "
+                        "to shuffle."
+                    )
+                )
+
+            player.queue.shuffle()
+
+            await ctx.send(
+                embed=success_embed(
+                    "🔀 Queue shuffled."
+                )
+            )
+
+    @commands.hybrid_command(
+        name="volume",
+        aliases=["vol"],
+        usage="volume <0-200>",
+    )
+    @commands.guild_only()
+    @bot_in_vc()
+    async def volume(
+        self,
+        ctx: commands.Context,
+        vol: int,
+    ):
+
+        res = await self.tool_music_volume(
+            ctx,
+            vol,
+        )
+
+        await ctx.send(
+            embed=success_embed(res)
+        )
+
+    @commands.hybrid_command(
+        name="loop",
+        usage="loop [track|queue|off]",
+    )
+    @commands.guild_only()
+    @bot_in_vc()
+    async def loop(
+        self,
+        ctx: commands.Context,
+        mode: str = None,
+    ):
+
+        player = ctx.voice_client
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            return await ctx.send(
+                embed=error_embed(
+                    "Looping is only supported "
+                    "with Lavalink."
+                )
+            )
+
+        if (
+            mode is None
+            or mode.lower() == "off"
+        ):
+
+            player.queue.mode = (
+                wavelink.QueueMode.normal
+            )
+
+            msg = "🔁 Loop disabled."
+
+        elif mode.lower() in (
+            "track",
+            "one",
+        ):
+
+            player.queue.mode = (
+                wavelink.QueueMode.loop
+            )
+
+            msg = "🔂 Looping current track."
+
+        elif mode.lower() in (
+            "queue",
+            "all",
+        ):
+
+            player.queue.mode = (
+                wavelink.QueueMode.loop_all
+            )
+
+            msg = "🔁 Looping entire queue."
+
+        else:
+
+            return await ctx.send(
+                embed=error_embed(
+                    "Valid modes: "
+                    "`track`, `queue`, `off`."
+                )
+            )
+
+        await self._touch_controller(
+            player
+        )
+
+        await ctx.send(
+            embed=success_embed(msg)
+        )
+
+    @commands.command(
+        name="bassboost",
+        usage="bassboost [level 0-5]",
+    )
+    @commands.guild_only()
+    @bot_in_vc()
+    async def bassboost(
+        self,
+        ctx: commands.Context,
+        level: int = 3,
+    ):
+
+        player = ctx.voice_client
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            return await ctx.send(
+                embed=error_embed(
+                    "Filters require Lavalink."
+                )
+            )
+
+        level = max(
+            0,
+            min(
+                5,
+                level,
+            ),
+        )
+
+        gain = level * 0.08
+
+        filters: wavelink.Filters = (
+            player.filters
+        )
+
+        filters.equalizer.set(
+            bands=[
+                {
+                    "band": 0,
+                    "gain": gain,
+                },
+                {
+                    "band": 1,
+                    "gain": gain * 0.85,
+                },
+                {
+                    "band": 2,
+                    "gain": gain * 0.5,
+                },
+            ]
+        )
+
+        await player.set_filters(
+            filters
+        )
+
+        if level == 0:
+
+            await ctx.send(
+                embed=success_embed(
+                    "Bass boost removed."
+                )
+            )
+
+        else:
+
+            await ctx.send(
+                embed=success_embed(
+                    f"🎸 Bass boost level `{level}`."
+                )
+            )
+
+    async def _touch_controller(
+        self,
+        player: MusicPlayer,
+    ):
+
+        if (
+            not getattr(
+                player,
+                "controller",
+                None,
+            )
+            or not getattr(
+                player,
+                "controller_view",
+                None,
+            )
+        ):
+            return
+
+        try:
+
+            player.controller_view._sync_buttons()
+
+            await player.controller.edit(
+                embed=self.build_now_playing(
+                    player
+                ),
+                view=player.controller_view,
+            )
+
         except discord.HTTPException:
             pass
 
-    # ── Lavalink events ────────────────────────────────────────────────────────
+    # ── Lavalink events ───────────────────────────────────────────────────
 
     @commands.Cog.listener()
-    async def on_wavelink_node_ready(self, payload: wavelink.NodeReadyEventPayload):
-        log.info("Wavelink node ready: %s", payload.node.identifier)
+    async def on_wavelink_node_ready(
+        self,
+        payload: wavelink.NodeReadyEventPayload,
+    ):
+
+        log.info(
+            "Wavelink node ready: %s",
+            payload.node.identifier,
+        )
 
     @commands.Cog.listener()
-    async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload):
+    async def on_wavelink_track_start(
+        self,
+        payload: wavelink.TrackStartEventPayload,
+    ):
+
         player = payload.player
-        if not isinstance(player, MusicPlayer):
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
             return
 
-        if player.dj_enabled and payload.track is not None:
-            key = self._dj_track_key(payload.track)
+        if (
+            player.dj_enabled
+            and payload.track is not None
+        ):
+
+            key = self._dj_track_key(
+                payload.track
+            )
+
             if key:
-                player.dj_recent.append(key)
-            asyncio.create_task(self._dj_refill(player))
+                player.dj_recent.append(
+                    key
+                )
 
-        await self.send_controller(player)
+            asyncio.create_task(
+                self._dj_refill(player)
+            )
+
+        await self.send_controller(
+            player
+        )
 
     @commands.Cog.listener()
-    async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload):
+    async def on_wavelink_track_end(
+        self,
+        payload: wavelink.TrackEndEventPayload,
+    ):
+
         player = payload.player
-        if not isinstance(player, MusicPlayer):
+
+        if not isinstance(
+            player,
+            MusicPlayer,
+        ):
             return
+
         await asyncio.sleep(1)
-        if not player.playing and not player.queue.count:
+
+        if (
+            not player.playing
+            and not player.queue.count
+        ):
+
             await player.teardown_controller()
 
     @commands.Cog.listener()
-    async def on_wavelink_track_exception(self, payload: wavelink.TrackExceptionEventPayload):
-        log.warning("Track exception: %s", payload.exception)
+    async def on_wavelink_track_exception(
+        self,
+        payload: wavelink.TrackExceptionEventPayload,
+    ):
+
+        log.warning(
+            "Track exception: %s",
+            payload.exception,
+        )
+
         player = payload.player
-        if isinstance(player, MusicPlayer) and player.home:
+
+        if (
+            isinstance(
+                player,
+                MusicPlayer,
+            )
+            and player.home
+        ):
+
             try:
-                await player.home.send(embed=error_embed("Track failed to play, skipping."))
+
+                await player.home.send(
+                    embed=error_embed(
+                        "Track failed to play, skipping."
+                    )
+                )
+
             except discord.HTTPException:
                 pass
 
     @commands.Cog.listener()
-    async def on_wavelink_track_stuck(self, payload: wavelink.TrackStuckEventPayload):
-        log.warning("Track stuck, skipping.")
+    async def on_wavelink_track_stuck(
+        self,
+        payload: wavelink.TrackStuckEventPayload,
+    ):
+
+        log.warning(
+            "Track stuck, skipping."
+        )
+
         player = payload.player
-        if isinstance(player, MusicPlayer):
-            await player.skip(force=True)
+
+        if isinstance(
+            player,
+            MusicPlayer,
+        ):
+
+            await player.skip(
+                force=True
+            )
 
     @commands.Cog.listener()
-    async def on_wavelink_inactive_player(self, player: wavelink.Player):
-        if isinstance(player, MusicPlayer):
+    async def on_wavelink_inactive_player(
+        self,
+        player: wavelink.Player,
+    ):
+
+        if isinstance(
+            player,
+            MusicPlayer,
+        ):
+
             player.dj_enabled = False
+
             if player.home:
+
                 try:
-                    await player.home.send(embed=info_embed("Left the channel after 5 minutes of silence."))
+
+                    await player.home.send(
+                        embed=info_embed(
+                            "Left the channel after "
+                            "5 minutes of silence."
+                        )
+                    )
+
                 except discord.HTTPException:
                     pass
+
             await player.teardown_controller()
+
         await player.disconnect()
 
     @commands.Cog.listener()
-    async def on_voice_state_update(self, member, before, after):
+    async def on_voice_state_update(
+        self,
+        member,
+        before,
+        after,
+    ):
+
         player = member.guild.voice_client
-        if not player or not getattr(player, "channel", None):
+
+        if (
+            not player
+            or not getattr(
+                player,
+                "channel",
+                None,
+            )
+        ):
             return
-        humans = [m for m in player.channel.members if not m.bot]
+
+        humans = [
+            m
+            for m in player.channel.members
+            if not m.bot
+        ]
+
         if not humans:
-            if isinstance(player, MusicPlayer):
+
+            if isinstance(
+                player,
+                MusicPlayer,
+            ):
+
                 player.dj_enabled = False
+
                 await player.teardown_controller()
+
             await player.disconnect()
 
 
-# ── Utilities ─────────────────────────────────────────────────────────────────
-
-def _trim(text: str, limit: int = 45) -> str:
-    text = (text or "Unknown").replace("[", "(").replace("]", ")")
-    return text if len(text) <= limit else text[:limit - 1] + "…"
+# ── Utilities ─────────────────────────────────────────────────────────────
 
 
-def _fmt_duration(ms: int) -> str:
+def _trim(
+    text: str,
+    limit: int = 45,
+) -> str:
+
+    text = (
+        text or "Unknown"
+    ).replace(
+        "[",
+        "(",
+    ).replace(
+        "]",
+        ")",
+    )
+
+    return (
+        text
+        if len(text) <= limit
+        else text[:limit - 1] + "…"
+    )
+
+
+def _fmt_duration(
+    ms: int,
+) -> str:
+
     if not ms:
         return "0:00"
+
     s = ms // 1000
-    m, s = divmod(s, 60)
-    h, m = divmod(m, 60)
+
+    m, s = divmod(
+        s,
+        60,
+    )
+
+    h, m = divmod(
+        m,
+        60,
+    )
+
     if h:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
+        return (
+            f"{h}:{m:02d}:{s:02d}"
+        )
+
+    return (
+        f"{m}:{s:02d}"
+    )
 
 
-def _progress_bar(position: int, duration: int, length: int = BAR_LENGTH) -> str:
+def _progress_bar(
+    position: int,
+    duration: int,
+    length: int = BAR_LENGTH,
+) -> str:
+
     if not duration:
         return BAR_EMPTY * length
-    ratio = min(1.0, max(0.0, position / duration))
-    filled = int(ratio * (length - 1))
-    return BAR_FILL * filled + BAR_KNOB + BAR_EMPTY * (length - filled - 1)
+
+    ratio = min(
+        1.0,
+        max(
+            0.0,
+            position / duration,
+        ),
+    )
+
+    filled = int(
+        ratio * (length - 1)
+    )
+
+    return (
+        BAR_FILL * filled
+        + BAR_KNOB
+        + BAR_EMPTY
+        * (
+            length
+            - filled
+            - 1
+        )
+    )
 
 
-def _volume_icon(vol: int) -> str:
+def _volume_icon(
+    vol: int,
+) -> str:
+
     if vol == 0:
         return "🔇"
+
     if vol < 50:
         return "🔉"
+
     return "🔊"
 
 
-def _requester(guild: discord.Guild | None, track: wavelink.Playable):
+def _requester(
+    guild: discord.Guild | None,
+    track: wavelink.Playable,
+):
+
     if not guild:
         return None
-    extras = getattr(track, "extras", None)
-    rid = getattr(extras, "requester", None)
-    return guild.get_member(rid) if rid else None
+
+    extras = getattr(
+        track,
+        "extras",
+        None,
+    )
+
+    rid = getattr(
+        extras,
+        "requester",
+        None,
+    )
+
+    return (
+        guild.get_member(rid)
+        if rid
+        else None
+    )
 
 
-def _loop_status(player: wavelink.Player) -> str:
-    mode = getattr(getattr(player, "queue", None), "mode", None)
+def _loop_status(
+    player: wavelink.Player,
+) -> str:
+
+    mode = getattr(
+        getattr(
+            player,
+            "queue",
+            None,
+        ),
+        "mode",
+        None,
+    )
+
     if mode == wavelink.QueueMode.loop:
         return "🔂 Track"
+
     if mode == wavelink.QueueMode.loop_all:
         return "🔁 Queue"
+
     return "Off"
 
 
 async def setup(bot):
-    await bot.add_cog(Music(bot))
+    await bot.add_cog(
+        Music(bot)
+    )
